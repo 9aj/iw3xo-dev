@@ -41,9 +41,20 @@ behavior and are not restricted by the selection box. A selection box needs
 two points added with `mapexport_selectionAdd`.
 
 The exporter reports available, attempted and written brush counts and rejection
-counts for insufficient points/sides, minimum size and invalid bounds. Geometry
-that cannot be reconstructed safely is still rejected. Check these counts if
-objects remain missing; changing draw distance will not help.
+counts for invalid/empty convex hulls and minimum size. Rejected hulls also leave
+a comment containing the source collision-brush index and bounds in the `.map`.
+Check these counts if objects remain missing; changing draw distance will not help.
+
+## Slopes and small convex brushes
+
+Brush export clips each collision bounding box against its additional planes,
+independently of debug drawing. Valid four- and five-sided brushes are included
+automatically. Fractional plane points are preserved, and each exported face uses
+its original collision-side material even when other faces disappear during clipping.
+
+`mapexport_5SideBrush`, `mapexport_eps1` and `mapexport_eps2` remain registered for
+old configurations but no longer affect brush export. No special toggle or rounding
+setting is needed to include wedges and preserve slopes.
 
 ## Validation
 
@@ -53,6 +64,8 @@ Run the independent regression test from a Visual Studio developer prompt:
 ```bat
 cl /nologo /EHsc /std:c++17 tests\map_export_tests.cpp /Fe:build\map_export_tests.exe /Fo:build\map_export_tests.obj
 build\map_export_tests.exe
+cl /nologo /EHsc /std:c++17 tests\convex_brush_tests.cpp /Fe:build\convex_brush_tests.exe /Fo:build\convex_brush_tests.obj
+build\convex_brush_tests.exe
 ```
 
 In-game/Radiant checks (require CoD4 and the relevant map/assets):
@@ -69,10 +82,20 @@ In-game/Radiant checks (require CoD4 and the relevant map/assets):
    a brushmodel without an explicit origin (uses zero).
 4. Export the same map repeatedly, first whole, then selected, then whole again.
    Confirm brushmodel geometry is neither duplicated nor retained from an earlier
-   selection. Exercise a five-sided reconstructed brushmodel as well.
+   selection. Exercise four- and five-sided brushmodels as well.
 5. Disable entity/model write options and confirm those objects are omitted.
    Attempt an export to an unwritable output location and check the error message.
 
 The standalone test covers multi-brush leaves, split nodes, overlapping-brush
 subtrees, deduplication, invalid brush indices, null leaves and invalid roots or
-offsets. It does not replace in-game geometry validation.
+offsets. The geometry test checks boxes, tetrahedra, wedges, fractional and
+translated slopes, redundant/nonunit planes, a 160-sided prism and invalid hulls.
+It checks emitted plane orientation, source-side identity, half-space containment
+and serialization precision.
+
+A local offline audit of `mp_qube.ff` (SHA-256
+`fdc7e10c6b8f206bada4ad6c458c6107ce85a0f596197446e2092e21e2cc4912`)
+passed all 3,304 collision brushes through the production reconstruction helper:
+3,304 accepted, zero rejected, 33 five-sided hulls and 1,200 hulls with fractional
+output points. This verifies reconstruction against that compiled map; it does not
+replace a fresh in-game export and inspection of the reported bounces in Radiant.
