@@ -554,8 +554,6 @@ namespace components
 				SPACING(0.0f, 4.0f);
 
 				ImGui::SliderFloat("Brush Minimum Size", gui::dvar_get_set<float*>(dvars::mapexport_brushMinSize), dvars::mapexport_brushMinSize->domain.value.min, dvars::mapexport_brushMinSize->domain.value.max, "%.1f"); TT("mapexport_brushMinSize :: only export brushes (with more then 6 sides) if their diagonal length is greater then <this>");
-				ImGui::SliderFloat("Brushside Epsilon 1", gui::dvar_get_set<float*>(dvars::mapexport_brushEpsilon1), dvars::mapexport_brushEpsilon1->domain.value.min, dvars::mapexport_brushEpsilon1->domain.value.max, "%.1f"); TT("mapexport_brushEpsilon1 :: use 0.3 to export more but prob. broken brushes");
-				ImGui::SliderFloat("Brushside Epsilon 2", gui::dvar_get_set<float*>(dvars::mapexport_brushEpsilon2), dvars::mapexport_brushEpsilon2->domain.value.min, dvars::mapexport_brushEpsilon2->domain.value.max, "%.1f"); TT("mapexport_brushEpsilon2 :: use 0.4 to export more but prob. broken brushes");
 
 				// --------------- 
 				SEPERATORV(4.0f);

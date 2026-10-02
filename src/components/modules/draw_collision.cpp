@@ -1,5 +1,5 @@
 #include "std_include.hpp"
-#include <memory>
+#include "utils/convex_brush.hpp"
 
 #define CM_CONTENTS_SOLID       0x1
 #define CM_CONTENTS_CLIPSHOT    0x2000      // weapon clip
@@ -17,10 +17,8 @@ struct export_brush_stats
 {
 	int attempted = 0;
 	int written = 0;
-	int too_few_points = 0;
-	int too_few_sides = 0;
+	int invalid_geometry = 0;
 	int too_small = 0;
-	int invalid_bounds = 0;
 };
 export_brush_stats mapexport_brush_stats_;
 bool  mapexport_selection_add_;
@@ -327,13 +325,13 @@ namespace components
 					memcpy(&current_plane, plane2, sizeof(current_plane));
 				}
 
-				const float snap_error = log((current_plane[0] * snapped[0] + current_plane[1] * snapped[1] + current_plane[2] * snapped[2]) - current_plane[3]);
+				const float snap_error = fabs((current_plane[0] * snapped[0] + current_plane[1] * snapped[1] + current_plane[2] * snapped[2]) - current_plane[3]);
 				if (snap_error > max_snap_error)
 				{
 					max_snap_error = snap_error;
 				}
 					
-				const float base_error = log((current_plane[0] * xyz[0] + current_plane[1] * xyz[1] + current_plane[2] * xyz[2]) - current_plane[3]);
+				const float base_error = fabs((current_plane[0] * xyz[0] + current_plane[1] * xyz[1] + current_plane[2] * xyz[2]) - current_plane[3]);
 				if (base_error > max_base_error) 
 				{
 					max_base_error = base_error;
@@ -377,10 +375,7 @@ namespace components
 		{
 			const auto plane = brush->sides[side_index].plane;
 
-			if (   plane != brush->sides[side_indices[0] - 6].plane
-				&& plane != brush->sides[side_indices[1] - 6].plane
-				&& plane != brush->sides[side_indices[2] - 6].plane
-				&& ((plane->normal[0] * xyz[0]) + (plane->normal[1] * xyz[1]) + (plane->normal[2] * xyz[2]) - plane->dist) > 0.1f)
+			if (((plane->normal[0] * xyz[0]) + (plane->normal[1] * xyz[1]) + (plane->normal[2] * xyz[2]) - plane->dist) > 0.1f)
 			{
 				return pt_count;
 			}
@@ -713,7 +708,7 @@ namespace components
 					utils::vector::cross3(va, vb, vc);
 					const float test_against = fabs(((vc[0] * normal[0]) + (vc[1] * normal[1])) + (vc[2] * normal[2]));
 
-					if(test_against > 0.0f)
+					if(test_against > area_best)
 					{
 						area_best = test_against;
 						*i0 = i;
@@ -795,112 +790,6 @@ namespace components
 		}
 	}
 
-	// Map Export - CM_BuildBrushWindingForSide
-	bool mapexport_build_winding_for_side(game::winding_t *winding, const float *plane_normal, const unsigned int side_index, game::ShowCollisionBrushPt *pts, int pt_count, game::map_brushSide_t *brush_side)
-	{
-		int i, i0, i1, i2, j;
-
-		game::vec4_t plane;
-		utils::vector::zero4(plane);
-
-		if (!winding)
-		{
-			game::Com_Error(0, COM_ERROR_MSG);
-			return false;
-		}
-
-		if (!plane_normal)
-		{
-			game::Com_Error(0, COM_ERROR_MSG);
-			return false;
-		}
-
-		if (!pts)
-		{
-			game::Com_Error(0, COM_ERROR_MSG);
-			return false;
-		}
-
-		glm::vec3 xyz_list[1024];
-		const int xyzCount = get_xyz_list(side_index, pts, pt_count, xyz_list, 1024);
-
-		if (xyzCount < 3) 
-		{
-			return false;
-		}
-
-		pick_projection_axes(plane_normal, &i, &j);
-
-		glm::set_float3(winding->p[0], xyz_list[0]);
-		glm::set_float3(winding->p[1], xyz_list[1]);
-
-		winding->numpoints = 2;
-
-		for (auto k = 2; k < xyzCount; ++k) 
-		{
-			add_exterior_point_to_winding(winding, xyz_list[k], i, j);
-		}
-
-		if (representative_triangle_from_winding(winding, plane_normal, &i0, &i1, &i2) < 0.001f) 
-		{
-			return false;
-		}
-
-		plane_from_points(&*plane, winding->p[i0], winding->p[i1], winding->p[i2]);
-
-		if (utils::vector::dot3(plane, plane_normal) < 0.0f)
-		{
-			reverse_winding(winding);
-		}
-
-		// huh
-		game::winding_t *w = winding;
-
-		for (auto _i = 0; _i < 3; _i++)
-		{
-			for (auto _j = 0; _j < 3; _j++)
-			{ 
-				if (fabs(w->p[_i][_j]) < dvars::mapexport_brushEpsilon1->current.value)
-				{
-					w->p[_i][_j] = 0;
-				}
-				else if (fabs((int)w->p[_i][_j] - w->p[_i][_j]) < dvars::mapexport_brushEpsilon2->current.value)
-				{
-					w->p[_i][_j] = (float)(int)w->p[_i][_j];
-				}
-			}
-		}
-
-		// *
-		// create the brushside
-
-		// plane 0
-		for (auto idx = 0; idx < 3; idx++)
-		{
-			brush_side->brushPlane[0].point[idx] = w->p[0][idx];
-		}
-
-		// plane 1
-		for (auto idx = 0; idx < 3; idx++) 
-		{
-			brush_side->brushPlane[1].point[idx] = w->p[1][idx];
-		}
-
-		// plane 2
-		for (auto idx = 0; idx < 3; idx++)
-		{
-			brush_side->brushPlane[2].point[idx] = w->p[2][idx];
-		}
-
-		/*if (!utils::polylib::CheckWinding(w))
-		{
-			Game::Com_PrintMessage(0, "removed degenerate brushside.\n", 0);
-			return false;
-		}*/
-		
-		return true;
-	}
-
 	// build winding (poly) for side (CM_BuildBrushWindingForSide)
 	bool build_brush_winding_for_side(game::winding_t* winding, const float* plane_normal, const int side_index, game::ShowCollisionBrushPt* pts, int pt_count)
 	{
@@ -980,39 +869,6 @@ namespace components
 		return true;
 	}
 
-	// Allocates a single brushside
-	game::map_brushSide_t *alloc_brush_side()
-	{
-		auto brush_side = static_cast<game::map_brushSide_t*>(malloc(sizeof(game::map_brushSide_t)));
-
-		if (brush_side)
-		{
-			memset(brush_side, 0, sizeof(game::map_brushSide_t));
-			return brush_side;
-		}
-		
-		game::Com_Error(0, COM_ERROR_MSG);
-		return nullptr;
-	}
-
-	bool is_brush_side_within_bounds(const game::map_brushSide_t* brush_side, const glm::vec3& mins, const glm::vec3& maxs)
-	{
-		if (!brush_side)
-		{
-			return false;
-		}
-
-		for (auto plane = 0; plane < 3; plane++)
-		{
-			if (!utils::polylib::is_point_within_bounds(glm::to_vec3(brush_side->brushPlane[plane].point), mins, maxs, 0.25f))
-			{
-				return false;
-			}
-		}
-
-		return true;
-	}
-	
 	// rebuild and draw brush from bounding box and dynamic sides (CM_ShowSingleBrushCollision)
 	void draw_single_brush_collision(game::cbrush_t *brush, const float *color, [[maybe_unused]] int brush_index, bool enable_export = true)
 	{
@@ -1050,20 +906,33 @@ namespace components
 		axial_planes[5].plane = glm::vec3(0.0f, 0.0f, 1.0f);
 		axial_planes[5].dist = brush->maxs[2];
 
-		// intersect all planes, 3 at a time, to to reconstruct face windings 
-		const int pt_count = for_each_brush_plane_intersection(brush, axial_planes, brush_pts);
-
-		if (mapexport_in_progress_ && enable_export)
+		const bool exporting = mapexport_in_progress_ && enable_export;
+		const int pt_count = exporting ? 0 : for_each_brush_plane_intersection(brush, axial_planes, brush_pts);
+		if (exporting || pt_count >= 4)
 		{
-			mapexport_brush_stats_.attempted++;
-			if (pt_count < 4) mapexport_brush_stats_.too_few_points++;
-		}
-
-		// we need atleast 4 valid points
-		if (pt_count >= 4)
-		{
-			// list of brushsides we are going to create within "CM_BuildBrushWindingForSideMapExport"
-			std::vector<std::unique_ptr<game::map_brushSide_t, decltype(&free)>> map_brush;
+			std::vector<utils::map_export::brush_face> map_brush;
+			if (exporting)
+			{
+				mapexport_brush_stats_.attempted++;
+				std::vector<utils::map_export::brush_plane> planes;
+				for (unsigned int side = 0; side < brush->numsides; ++side)
+				{
+					const auto* plane = brush->sides[side].plane;
+					planes.push_back({ { plane->normal[0], plane->normal[1], plane->normal[2] }, plane->dist });
+				}
+				map_brush = utils::map_export::reconstruct_brush(
+					{ brush->mins[0], brush->mins[1], brush->mins[2] },
+					{ brush->maxs[0], brush->maxs[1], brush->maxs[2] }, planes);
+				if (map_brush.empty())
+				{
+					mapexport_brush_stats_.invalid_geometry++;
+					mapexport_mapfile_ << utils::va(
+						"// rejected collision brush %u: invalid or empty convex hull; bounds (%.9f %.9f %.9f) (%.9f %.9f %.9f)\n",
+						static_cast<unsigned short>(brush->cmBrushIndex), brush->mins[0], brush->mins[1], brush->mins[2],
+						brush->maxs[0], brush->maxs[1], brush->maxs[2]);
+					return;
+				}
+			}
 
 			const auto poly_lit = dvars::r_drawCollision_polyLit->current.enabled;
 			const auto poly_outlines = dvars::r_drawCollision->current.integer == 3 ? true : false;
@@ -1072,124 +941,75 @@ namespace components
 			const auto poly_face = dvars::r_drawCollision_polyFace->current.enabled;
 
 			// -------------------------------
-			// brushside [0]-[5] (axialPlanes)
-
-			for (auto side_index = 0u; side_index < 6; ++side_index)
+			if (!exporting)
 			{
-				float plane_normal[3];
-				glm::set_float3(plane_normal, axial_planes[side_index].plane);
+				// brushside [0]-[5] (axialPlanes)
 
-				// build winding for the current brushside and check if it is visible (culling)
-				if (build_brush_winding_for_side((game::winding_t*)&winding_pool_, plane_normal, side_index, brush_pts, pt_count))
+				for (auto side_index = 0u; side_index < 6; ++side_index)
 				{
-					if (dvars::r_drawCollision->current.integer == 1)
+					float plane_normal[3];
+					glm::set_float3(plane_normal, axial_planes[side_index].plane);
+
+					// build winding for the current brushside and check if it is visible (culling)
+					if (build_brush_winding_for_side((game::winding_t*)&winding_pool_, plane_normal, side_index, brush_pts, pt_count))
 					{
-						_debug::add_and_draw_debug_lines(winding_pool_.numpoints, (float(*)[3])&winding_pool_.p, dvars::r_drawCollision_lineColor->current.vector);
+						if (dvars::r_drawCollision->current.integer == 1)
+						{
+							_debug::add_and_draw_debug_lines(winding_pool_.numpoints, (float(*)[3])&winding_pool_.p, dvars::r_drawCollision_lineColor->current.vector);
+						}
+						else
+						{
+							_debug::draw_poly(
+								/* numPts	*/ winding_pool_.numpoints,
+								/* points	*/ (float(*)[3])&winding_pool_.p,
+								/* pColor	*/ color,
+								/* pLit		*/ poly_lit,
+								/* pOutline */ poly_outlines,
+								/* pLineCol	*/ poly_linecolor,
+								/* pDepth	*/ poly_depth,
+								/* pFace	*/ poly_face);
+						}
+
+						game::glob::debug_collision_rendered_planes_counter++;
 					}
-					else
-					{
-						_debug::draw_poly(
-							/* numPts	*/ winding_pool_.numpoints,
-							/* points	*/ (float(*)[3])&winding_pool_.p, 
-							/* pColor	*/ color, 
-							/* pLit		*/ poly_lit,
-							/* pOutline */ poly_outlines,
-							/* pLineCol	*/ poly_linecolor,
-							/* pDepth	*/ poly_depth,
-							/* pFace	*/ poly_face);
-					}
-				
-					game::glob::debug_collision_rendered_planes_counter++;
+
 				}
 
-				// create brushsides from brush bounds (side [0]-[5])
-				if (mapexport_in_progress_ && enable_export)
+				// ---------------------------------
+				// brushside [6] and up (additional)
+
+				for (auto side_index = 6u; side_index < brush->numsides + 6; ++side_index)
 				{
-					// allocate a brushside
-					game::map_brushSide_t *brush_side = alloc_brush_side();
-
-					// create a brushside from windings
-					if (mapexport_build_winding_for_side((game::winding_t*)&winding_pool_, plane_normal, side_index, brush_pts, pt_count, brush_side))
+					if (build_brush_winding_for_side((game::winding_t*)&winding_pool_, brush->sides[side_index - 6].plane->normal, side_index, brush_pts, pt_count))
 					{
-						// brushside is valid
-						map_brush.emplace_back(brush_side, &free);
+						if (dvars::r_drawCollision->current.integer == 1)
+						{
+							_debug::add_and_draw_debug_lines(winding_pool_.numpoints, (float(*)[3])&winding_pool_.p, dvars::r_drawCollision_lineColor->current.vector);
+						}
+						else
+						{
+							_debug::draw_poly(
+								/* numPts	*/ winding_pool_.numpoints,
+								/* points	*/ (float(*)[3])&winding_pool_.p,
+								/* pColor	*/ color,
+								/* pLit		*/ poly_lit,
+								/* pOutline */ poly_outlines,
+								/* pLineCol	*/ poly_linecolor,
+								/* pDepth	*/ poly_depth,
+								/* pFace	*/ poly_face);
+						}
+
+						game::glob::debug_collision_rendered_planes_counter++;
 					}
 
-					else
-					{
-						// not a valid brushside so free it
-						free(brush_side);
-					}
-				}
-			}
 
-			// ---------------------------------
-			// brushside [6] and up (additional)
-
-			for (auto side_index = 6u; side_index < brush->numsides + 6; ++side_index)
-			{
-				if (build_brush_winding_for_side((game::winding_t*)&winding_pool_, brush->sides[side_index - 6].plane->normal, side_index, brush_pts, pt_count))
-				{
-					if (dvars::r_drawCollision->current.integer == 1)
-					{
-						_debug::add_and_draw_debug_lines(winding_pool_.numpoints, (float(*)[3])&winding_pool_.p, dvars::r_drawCollision_lineColor->current.vector);
-					}
-					else
-					{
-						_debug::draw_poly(
-							/* numPts	*/ winding_pool_.numpoints,
-							/* points	*/ (float(*)[3])&winding_pool_.p,
-							/* pColor	*/ color,
-							/* pLit		*/ poly_lit,
-							/* pOutline */ poly_outlines,
-							/* pLineCol	*/ poly_linecolor,
-							/* pDepth	*/ poly_depth,
-							/* pFace	*/ poly_face);
-					}
-
-					game::glob::debug_collision_rendered_planes_counter++;
 				}
 
-				// create brushsides from cm->brushes->sides (side [6] and up)
-				if (mapexport_in_progress_ && enable_export)
-				{
-					// allocate a brushside
-					game::map_brushSide_t *brush_side = alloc_brush_side();
-
-					// create a brushside from windings
-					if (mapexport_build_winding_for_side((game::winding_t*)&winding_pool_, brush->sides[side_index - 6].plane->normal, side_index, brush_pts, pt_count, brush_side))
-					{
-						// brushside is valid
-						map_brush.emplace_back(brush_side, &free);
-					}
-
-					else
-					{
-						// not a valid brushside so free it
-						free(brush_side);
-					}
-				}
 			}
 
 			// if we are exporting the map
 			if (mapexport_in_progress_ && enable_export)
 			{
-				bool dirty_hack_5_sides = false;
-
-				// we need atleast 6 valid brushsides
-				if (map_brush.size() < 6)
-				{
-					if (map_brush.size() == 5 && dvars::mapexport_brush5Sides && dvars::mapexport_brush5Sides->current.enabled)
-					{
-						dirty_hack_5_sides = true;
-					}
-					else
-					{
-						mapexport_brush_stats_.too_few_sides++;
-						return;
-					}
-				}
-
 				const glm::vec3 brush_mins = glm::to_vec3(brush->mins);
 				const glm::vec3 brush_maxs = glm::to_vec3(brush->maxs);
 
@@ -1203,25 +1023,6 @@ namespace components
 					}
 				}
 
-				for (const auto& side : map_brush)
-				{
-					if (!is_brush_side_within_bounds(side.get(), brush_mins, brush_maxs))
-					{
-						mapexport_brush_stats_.invalid_bounds++;
-						return;
-					}
-				}
-
-				// swap brushsides (bottom, top, right, back, left, front)
-				if (!dirty_hack_5_sides)
-				{
-					std::swap(map_brush[0], map_brush[5]);
-				}
-					
-				std::swap(map_brush[3], map_brush[4]);
-				std::swap(map_brush[1], map_brush[3]);
-				std::swap(map_brush[0], map_brush[1]);
-
 				// * 
 				// do not export brushmodels as normal brushes
 				// write brushside strings to g_mapBrushModelList instead
@@ -1234,7 +1035,7 @@ namespace components
 				else
 				{
 					// start brush
-					mapexport_mapfile_ << utils::va("// brush %d\n{", mapexport_current_brush_index_) << std::endl;
+					mapexport_mapfile_ << utils::va("// brush %d (collision brush %u)\n{", mapexport_current_brush_index_, static_cast<unsigned short>(brush->cmBrushIndex)) << std::endl;
 					mapexport_mapfile_ << "layer \"000_Global/Brushes\"" << std::endl;
 
 					// global brush exporting index count
@@ -1254,57 +1055,19 @@ namespace components
 				// print brush sides and material info
 				for (auto bs = 0u; bs < map_brush.size(); bs++)
 				{
-					std::string brush_side_str = utils::va(" ( %d %d %d ) ( %d %d %d ) ( %d %d %d ) ",
-						(int)map_brush[bs]->brushPlane[0].point[0], (int)map_brush[bs]->brushPlane[0].point[1], (int)map_brush[bs]->brushPlane[0].point[2],
-						(int)map_brush[bs]->brushPlane[1].point[0], (int)map_brush[bs]->brushPlane[1].point[1], (int)map_brush[bs]->brushPlane[1].point[2],
-						(int)map_brush[bs]->brushPlane[2].point[0], (int)map_brush[bs]->brushPlane[2].point[1], (int)map_brush[bs]->brushPlane[2].point[2]);
+					const std::string brush_side_str = utils::map_export::format_plane_points(map_brush[bs]);
 
 					if (!brush->isSubmodel)
 					{
 						mapexport_mapfile_ << brush_side_str.c_str();
 					}
 
-					// get material index for the current brush side
-					int material_side_index = 0;
-
-					// for the 6 brush sides created from axialplanes (brush bounds)
-					if (bs < 6)
-					{
-						// get material (brush->axialMaterialNum[array][index]) for the current brush side
-						// mapping axialnum order to .map brush side order
-						switch (bs)
-						{
-						case 0: // bottom
-							material_side_index = static_cast<int>( brush->axialMaterialNum[0][2] );
-							break;
-						case 1: // top
-							material_side_index = static_cast<int>( brush->axialMaterialNum[1][2] );
-							break;
-						case 2: // right
-							material_side_index = static_cast<int>( brush->axialMaterialNum[0][1] );
-							break;
-						case 3: // back
-							material_side_index = static_cast<int>( brush->axialMaterialNum[1][0] );
-							break;
-						case 4: // left
-							material_side_index = static_cast<int>( brush->axialMaterialNum[1][1] );
-							break;
-
-						case 5: // front
-							material_side_index = static_cast<int>( brush->axialMaterialNum[0][0] );
-							break;
-						}
-					}
-
-					// we have atleast 1 additional brush side
-					else
-					{
-						if (!dirty_hack_5_sides)
-						{
-							// additional brush sides start at index 0
-							material_side_index = static_cast<int>( brush->sides[bs - 6].materialNum );
-						}
-					}
+					// Clipping may remove axial/bevel faces. Keep the original side's
+					// material instead of guessing it from the exported face position.
+					const auto side_index = map_brush[bs].side_index;
+					const int material_side_index = side_index < 6
+						? static_cast<int>(brush->axialMaterialNum[side_index % 2][side_index / 2])
+						: static_cast<int>(brush->sides[side_index - 6].materialNum);
 
 					// *
 					// Material Dimensions
@@ -3265,10 +3028,9 @@ namespace components
 
 			game::Com_PrintMessage(0, utils::va(
 				"|- Collision brushes: %d available, %d attempted, %d written (including submodels).\n"
-				"|- Skipped: %d insufficient points, %d insufficient sides, %d below minimum size, %d invalid bounds.\n",
+				"|- Skipped: %d invalid/empty convex hulls, %d below minimum size.\n",
 				game::cm->numBrushes, mapexport_brush_stats_.attempted, mapexport_brush_stats_.written,
-				mapexport_brush_stats_.too_few_points, mapexport_brush_stats_.too_few_sides,
-				mapexport_brush_stats_.too_small, mapexport_brush_stats_.invalid_bounds), 0);
+				mapexport_brush_stats_.invalid_geometry, mapexport_brush_stats_.too_small), 0);
 			mapexport_mapfile_.close();
 			if (mapexport_mapfile_.fail())
 			{
@@ -3576,7 +3338,7 @@ namespace components
 
 		dvars::mapexport_brushEpsilon1 = game::Dvar_RegisterFloat(
 			/* name		*/ "mapexport_brushEpsilon1",
-			/* desc		*/ "brushside epsilon 1 (debug)",
+			/* desc		*/ "Legacy setting; export preserves fractional plane points and ignores this value.",
 			/* default	*/ 0.4f,
 			/* minVal	*/ 0.0f,
 			/* maxVal	*/ 1.0f,
@@ -3584,7 +3346,7 @@ namespace components
 
 		dvars::mapexport_brushEpsilon2 = game::Dvar_RegisterFloat(
 			/* name		*/ "mapexport_brushEpsilon2",
-			/* desc		*/ "brushside epsilon 2 (debug)",
+			/* desc		*/ "Legacy setting; export preserves fractional plane points and ignores this value.",
 			/* default	*/ 1.0f,
 			/* minVal	*/ 0.0f,
 			/* maxVal	*/ 1.0f,
@@ -3600,7 +3362,7 @@ namespace components
 
 		dvars::mapexport_brush5Sides = game::Dvar_RegisterBool(
 			/* name		*/ "mapexport_brush5Sides",
-			/* desc		*/ "enable exp. export of brushes with only 5 sides",
+			/* desc		*/ "Legacy setting; all valid convex brushes with at least four faces are now exported.",
 			/* default	*/ true,
 			/* flags	*/ game::dvar_flags::saved);
 
