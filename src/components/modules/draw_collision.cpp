@@ -1,4 +1,5 @@
 #include "std_include.hpp"
+#include <memory>
 
 #define CM_CONTENTS_SOLID       0x1
 #define CM_CONTENTS_CLIPSHOT    0x2000      // weapon clip
@@ -11,6 +12,17 @@ std::chrono::time_point<std::chrono::steady_clock> mapexport_timestamp_brushgen_
 
 bool  mapexport_cmd_ = false;
 bool  mapexport_in_progress_ = false;
+bool  mapexport_full_map_ = false;
+struct export_brush_stats
+{
+	int attempted = 0;
+	int written = 0;
+	int too_few_points = 0;
+	int too_few_sides = 0;
+	int too_small = 0;
+	int invalid_bounds = 0;
+};
+export_brush_stats mapexport_brush_stats_;
 bool  mapexport_selection_add_;
 int	  mapexport_current_brush_index_ = 0;
 float mapexport_quad_eps_ = 0.0f;
@@ -1041,11 +1053,17 @@ namespace components
 		// intersect all planes, 3 at a time, to to reconstruct face windings 
 		const int pt_count = for_each_brush_plane_intersection(brush, axial_planes, brush_pts);
 
+		if (mapexport_in_progress_ && enable_export)
+		{
+			mapexport_brush_stats_.attempted++;
+			if (pt_count < 4) mapexport_brush_stats_.too_few_points++;
+		}
+
 		// we need atleast 4 valid points
 		if (pt_count >= 4)
 		{
 			// list of brushsides we are going to create within "CM_BuildBrushWindingForSideMapExport"
-			std::vector<game::map_brushSide_t*> map_brush;
+			std::vector<std::unique_ptr<game::map_brushSide_t, decltype(&free)>> map_brush;
 
 			const auto poly_lit = dvars::r_drawCollision_polyLit->current.enabled;
 			const auto poly_outlines = dvars::r_drawCollision->current.integer == 3 ? true : false;
@@ -1094,7 +1112,7 @@ namespace components
 					if (mapexport_build_winding_for_side((game::winding_t*)&winding_pool_, plane_normal, side_index, brush_pts, pt_count, brush_side))
 					{
 						// brushside is valid
-						map_brush.push_back(brush_side);
+						map_brush.emplace_back(brush_side, &free);
 					}
 
 					else
@@ -1142,7 +1160,7 @@ namespace components
 					if (mapexport_build_winding_for_side((game::winding_t*)&winding_pool_, brush->sides[side_index - 6].plane->normal, side_index, brush_pts, pt_count, brush_side))
 					{
 						// brushside is valid
-						map_brush.push_back(brush_side);
+						map_brush.emplace_back(brush_side, &free);
 					}
 
 					else
@@ -1167,6 +1185,7 @@ namespace components
 					}
 					else
 					{
+						mapexport_brush_stats_.too_few_sides++;
 						return;
 					}
 				}
@@ -1177,16 +1196,18 @@ namespace components
 				// check brushes defined by more then their axialplanes
 				if(map_brush.size() > 6)
 				{
-					if (glm::distance(brush_mins, brush_maxs) < dvars::mapexport_brushMinSize->current.value)
+					if (!mapexport_full_map_ && glm::distance(brush_mins, brush_maxs) < dvars::mapexport_brushMinSize->current.value)
 					{
+						mapexport_brush_stats_.too_small++;
 						return;
 					}
 				}
 
 				for (const auto& side : map_brush)
 				{
-					if (!is_brush_side_within_bounds(side, brush_mins, brush_maxs))
+					if (!is_brush_side_within_bounds(side.get(), brush_mins, brush_maxs))
 					{
+						mapexport_brush_stats_.invalid_bounds++;
 						return;
 					}
 				}
@@ -1207,8 +1228,8 @@ namespace components
 
 				if (brush->isSubmodel)
 				{
-					// clear any existing sides
-					map_brushmodel_list_[brush->cmSubmodelIndex].brush_sides.clear();
+					// Keep each constituent brush separate within the entity.
+					map_brushmodel_list_[brush->cmSubmodelIndex].brushes.emplace_back();
 				}
 				else
 				{
@@ -1350,11 +1371,15 @@ namespace components
 					}
 					else
 					{
-						map_brushmodel_list_[brush->cmSubmodelIndex].brush_sides.push_back(brush_side_str + utils::va("%s %d %d 0 0 0 0 lightmap_gray 16384 16384 0 0 0 0\n", material_name_for_brushside.c_str(), texture_width, texture_height));
+						map_brushmodel_list_[brush->cmSubmodelIndex].brushes.back().push_back(brush_side_str + utils::va("%s %d %d 0 0 0 0 lightmap_gray 16384 16384 0 0 0 0\n", material_name_for_brushside.c_str(), texture_width, texture_height));
 					}
 					
 				}
 
+				if (!brush->isSubmodel || dvars::mapexport_writeEntities->current.enabled)
+				{
+					mapexport_brush_stats_.written++;
+				}
 				if (!brush->isSubmodel)
 				{
 					// end brush
@@ -2488,6 +2513,9 @@ namespace components
 
 			// let our code know that we are about to export a map
 			mapexport_in_progress_ = true;
+			mapexport_full_map_ = !dvars::mapexport_useFilters->current.enabled;
+			mapexport_brush_stats_ = {};
+			for (auto& model : map_brushmodel_list_) model.brushes.clear();
 
 			// map file name
 			std::string map_name = game::cm->name;
@@ -2510,13 +2538,31 @@ namespace components
 			// create directory root/map_export if it doesnt exist
 			// client is only able to export to a sub-directory of "menu_export"
 
-			if (std::filesystem::create_directories(base_path))
+			std::error_code directory_error;
+			if (std::filesystem::create_directories(base_path, directory_error))
 			{
 				game::Com_PrintMessage(0, "|- Created directory \"root/iw3xo/map_export\"\n", 0);
 			}
 
-			// steam to .map file
+			if (directory_error)
+			{
+				game::Com_PrintMessage(0, "^1[MAP-EXPORT]: Could not create output directory.\n", 0);
+				mapexport_in_progress_ = false;
+				return;
+			}
+
+			// stream to .map file
+			mapexport_mapfile_.clear();
 			mapexport_mapfile_.open(file_path.c_str());
+			if (!mapexport_mapfile_.is_open())
+			{
+				game::Com_PrintMessage(0, "^1[MAP-EXPORT]: Could not open output file.\n", 0);
+				mapexport_in_progress_ = false;
+				return;
+			}
+			game::Com_PrintMessage(0, mapexport_full_map_
+				? "|- Scope: entire collision map (debug filters and minimum size ignored).\n"
+				: "|- Scope: filtered collision map (debug filters apply).\n", 0);
 
 			// build entity list
 			char* mapents_ptr = game::cm->mapEnts->entityString;
@@ -2550,6 +2596,14 @@ namespace components
 		// Handle box selection
 		sbox_frame(filter_brush_selection);
 
+		if (mapexport_in_progress_ && mapexport_full_map_)
+		{
+			filter_brush_amount = game::cm->numBrushes;
+			filter_brush_index = false;
+			filter_brush_sorting = false;
+			filter_brush_selection = false;
+		}
+
 		// do not draw brushes when using the selection box
 		if (!mapexport_in_progress_ && filter_brush_selection)
 		{
@@ -2558,7 +2612,7 @@ namespace components
 
 		// --------
 
-		const bool brush_index_visible = dvars::r_drawCollision_brushIndexVisible && dvars::r_drawCollision_brushIndexVisible->current.enabled;
+		const bool brush_index_visible = !mapexport_in_progress_ && dvars::r_drawCollision_brushIndexVisible && dvars::r_drawCollision_brushIndexVisible->current.enabled;
 
 		if (filter_brush_sorting)
 		{
@@ -2652,16 +2706,28 @@ namespace components
 				brush = &game::cm->brushes[brushIndex];
 			}
 
-			// if brush is part of a submodel, translate brushmodel bounds by the submodel origin
+			// Keep the translated copy and side planes alive for the whole iteration.
+			game::cbrush_t* source_brush = brush;
+			game::cbrush_t translated_brush = {};
+			std::vector<game::cbrushside_t> translated_sides;
+			std::vector<game::cplane_s> translated_planes;
 			if (brush->isSubmodel)
 			{
-				game::cbrush_t dupe = {};
-				memcpy(&dupe, brush, sizeof(game::cbrush_t));
-
-				utils::vector::add3(map_brushmodel_list_[dupe.cmSubmodelIndex].cm_submodel_origin, dupe.mins, dupe.mins);
-				utils::vector::add3(map_brushmodel_list_[dupe.cmSubmodelIndex].cm_submodel_origin, dupe.maxs, dupe.maxs);
-
-				brush = &dupe;
+				translated_brush = *brush;
+				const auto* origin = map_brushmodel_list_[brush->cmSubmodelIndex].cm_submodel_origin;
+				utils::vector::add3(origin, translated_brush.mins, translated_brush.mins);
+				utils::vector::add3(origin, translated_brush.maxs, translated_brush.maxs);
+				translated_sides.resize(brush->numsides);
+				translated_planes.resize(brush->numsides);
+				for (unsigned int side = 0; side < brush->numsides; ++side)
+				{
+					translated_sides[side] = brush->sides[side];
+					translated_planes[side] = *brush->sides[side].plane;
+					translated_planes[side].dist += utils::vector::dot3(translated_planes[side].normal, origin);
+					translated_sides[side].plane = &translated_planes[side];
+				}
+				translated_brush.sides = translated_sides.data();
+				brush = &translated_brush;
 			}
 
 			// when not exporting a map
@@ -2694,7 +2760,7 @@ namespace components
 				}
 
 				// skip material check if using index filtering or selectionMode
-				if (!filter_brush_index && !filter_brush_selection)
+				if (!mapexport_full_map_ && !filter_brush_index && !filter_brush_selection)
 				{
 					// check if its a material we selected otherwise
 					if (!is_valid_brush_material_selection(brush, dvars::r_drawCollision_material->current.integer)) 
@@ -2713,7 +2779,7 @@ namespace components
 
 			if (brush_index_visible)
 			{
-				map_brush_list_for_index_filtering_.push_back(brush);
+				map_brush_list_for_index_filtering_.push_back(source_brush);
 			}
 
 			last_drawn_brush_amount++;	
@@ -2751,6 +2817,10 @@ namespace components
 
 				// get midpoint of brush bounds (xyz)
 				glm::vec3 printOrigin = get_brush_midpoint(brush, true);
+				if (brush->isSubmodel)
+				{
+					printOrigin += glm::to_vec3(map_brushmodel_list_[brush->cmSubmodelIndex].cm_submodel_origin);
+				}
 
 				// draw original brush index in the middle of the collision poly
 				draw_brush_index_numbers(viewParms, brush->cmBrushIndex, printOrigin, p, max_debug_prints);
@@ -3193,11 +3263,23 @@ namespace components
 			// *
 			// Map Export End
 
+			game::Com_PrintMessage(0, utils::va(
+				"|- Collision brushes: %d available, %d attempted, %d written (including submodels).\n"
+				"|- Skipped: %d insufficient points, %d insufficient sides, %d below minimum size, %d invalid bounds.\n",
+				game::cm->numBrushes, mapexport_brush_stats_.attempted, mapexport_brush_stats_.written,
+				mapexport_brush_stats_.too_few_points, mapexport_brush_stats_.too_few_sides,
+				mapexport_brush_stats_.too_small, mapexport_brush_stats_.invalid_bounds), 0);
 			mapexport_mapfile_.close();
+			if (mapexport_mapfile_.fail())
+			{
+				game::Com_PrintMessage(0, "^1[MAP-EXPORT]: Output write failed; the map file may be incomplete.\n", 0);
+			}
 			//export_mapFile_addon.close();
 			mapexport_current_brush_index_ = 0;
 
-			utils::clock_end_timer_print_seconds(mapexport_timestamp_start_, ">> DONE! Map export took (%.4f) seconds!\n");
+			utils::clock_end_timer_print_seconds(mapexport_timestamp_start_, mapexport_mapfile_.fail()
+				? ">> FAILED! Map export took (%.4f) seconds!\n"
+				: ">> DONE! Map export took (%.4f) seconds!\n");
 			game::Com_PrintMessage(0, "------------------------------------------------------\n\n", 0);
 		}
 
@@ -3487,6 +3569,11 @@ namespace components
 
 		// ---------------
 
+		dvars::mapexport_useFilters = game::Dvar_RegisterBool(
+			"mapexport_useFilters",
+			"Apply debug collision filters, selection box and brush minimum size to map export. Disabled exports the entire collision map.",
+			false, game::dvar_flags::saved);
+
 		dvars::mapexport_brushEpsilon1 = game::Dvar_RegisterFloat(
 			/* name		*/ "mapexport_brushEpsilon1",
 			/* desc		*/ "brushside epsilon 1 (debug)",
@@ -3570,7 +3657,7 @@ namespace components
 			mapexport_cmd_ = true;
 
 			game::Cmd_ExecuteSingleCommand(0, 0, "pm_hud_enable 0\n");
-			game::Cmd_ExecuteSingleCommand(0, 0, "say \"Export Done!\"\n");
+			game::Com_PrintMessage(0, "[MAP-EXPORT]: Export queued. See console for completion and geometry counts.\n", 0);
 		});
 
 		command::add("mapexport_selectionAdd", [](command::params)

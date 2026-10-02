@@ -1,0 +1,29 @@
+name: Map export regression tests
+
+on:
+  pull_request:
+    paths:
+      - 'src/utils/map_export.hpp'
+      - 'src/utils/entities.cpp'
+      - 'src/components/modules/draw_collision.cpp'
+      - 'tests/map_export_tests.cpp'
+      - '.github/workflows/map-export-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regression-tests:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and run traversal regressions
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
+          $visualStudio = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $visualStudio) { throw "Visual C++ tools not found" }
+          $vcvars = "$visualStudio/VC/Auxiliary/Build/vcvars32.bat"
+          cmd /c "call `"$vcvars`" >nul && cl /nologo /EHsc /std:c++17 tests\map_export_tests.cpp /Fe:map_export_tests.exe /Fo:map_export_tests.obj && map_export_tests.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

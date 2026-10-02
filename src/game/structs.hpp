@@ -7758,9 +7758,8 @@ namespace game
 		int cm_submodel_index;
 		cmodel_t* cm_submodel;
 		float cm_submodel_origin[3];
-		int cm_brush_index;
-		cbrush_t* cm_brush;
-		std::vector<std::string> brush_sides;
+		std::vector<unsigned short> cm_brush_indices;
+		std::vector<std::vector<std::string>> brushes;
 	};
 
 	struct boundingbox_s

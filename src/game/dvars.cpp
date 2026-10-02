@@ -208,6 +208,7 @@ namespace dvars
 
 
 	// Map exporting
+	game::dvar_s* mapexport_useFilters = nullptr;
 	game::dvar_s* mapexport_brushEpsilon1 = nullptr;
 	game::dvar_s* mapexport_brushEpsilon2 = nullptr;
 	game::dvar_s* mapexport_brushMinSize = nullptr;
