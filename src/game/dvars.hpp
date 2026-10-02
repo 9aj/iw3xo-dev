@@ -213,6 +213,7 @@ namespace dvars
 #endif
 
 	// Map exporting
+	extern game::dvar_s* mapexport_useFilters;
 	extern game::dvar_s* mapexport_brushEpsilon1;
 	extern game::dvar_s* mapexport_brushEpsilon2;
 	extern game::dvar_s* mapexport_brushMinSize;

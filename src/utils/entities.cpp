@@ -1,4 +1,5 @@
 #include "std_include.hpp"
+#include "map_export.hpp"
 
 namespace utils
 {
@@ -77,12 +78,9 @@ namespace utils
 				// get the submodel index 
 				const auto p_index = std::stoi(model.erase(0, 1));
 
-				if (p_index < static_cast<int>(bmodel_list.size()))
+				if (p_index > 0 && p_index < static_cast<int>(bmodel_list.size()))
 				{
-					const auto bmodel_side_count = static_cast<int>(bmodel_list[p_index].brush_sides.size());
-					
-					// skip submodel entity if we have less then 6 brushsides (we could also create a temp. cube at its origin)
-					if (bmodel_side_count < 6)
+					if (bmodel_list[p_index].brushes.empty())
 					{
 						continue;
 					}
@@ -107,16 +105,12 @@ namespace utils
 						basic_string.append("\"\n");
 					}
 
-					// start submodel brush
-					basic_string.append("{\n");
-
-					for (auto bSide = 0; bSide < bmodel_side_count; bSide++)
+					for (const auto& brush : bmodel_list[p_index].brushes)
 					{
-						basic_string.append(bmodel_list[p_index].brush_sides[bSide]);
+						basic_string.append("{\n");
+						for (const auto& side : brush) basic_string.append(side);
+						basic_string.append("}\n");
 					}
-
-					// close submodel brush
-					basic_string.append("}\n");
 
 					// close submodel
 					basic_string.append("}\n");
@@ -169,12 +163,9 @@ namespace utils
 				// get the submodel index 
 				const auto p_index = std::stoi(model.erase(0, 1));
 
-				if (p_index < static_cast<int>(bmodel_list.size()))
+				if (p_index > 0 && p_index < static_cast<int>(bmodel_list.size()))
 				{
-					const auto bmodel_side_count = static_cast<int>(bmodel_list[p_index].brush_sides.size());
-
-					// skip submodel entity if we have less then 6 brushsides (we could also create a temp. cube at its origin)
-					if (bmodel_side_count < 6)
+					if (bmodel_list[p_index].brushes.empty())
 					{
 						continue;
 					}
@@ -199,16 +190,12 @@ namespace utils
 						entity_string.append("\"\n");
 					}
 
-					// start submodel brush
-					entity_string.append("{\n");
-
-					for (auto bside = 0; bside < bmodel_side_count; bside++)
+					for (const auto& brush : bmodel_list[p_index].brushes)
 					{
-						entity_string.append(bmodel_list[p_index].brush_sides[bside]);
+						entity_string.append("{\n");
+						for (const auto& side : brush) entity_string.append(side);
+						entity_string.append("}\n");
 					}
-
-					// close submodel brush
-					entity_string.append("}\n");
 
 					// close submodel
 					entity_string.append("}\n");
@@ -304,90 +291,49 @@ namespace utils
 
 	std::vector<game::brushmodel_entity_s> entities::get_brushmodels()
 	{
-		std::vector<game::brushmodel_entity_s> bmodels;
-
-		// geting the total clipmap size would prob. be better
-		const uintptr_t leaf_brushes_start = reinterpret_cast<uintptr_t>(&*game::cm->leafbrushNodes);
-		const uintptr_t leaf_brushes_end = leaf_brushes_start + sizeof(game::cLeafBrushNode_s) * (game::cm->leafbrushNodesCount + game::cm->numLeafBrushes); // wrong
-
-		// first element is always empty because
-		// the first submodel within the entsMap starts at 1 and we want to avoid subtracting - 1 everywhere 
-		bmodels.emplace_back(game::brushmodel_entity_s()); 
+		// Index by the actual *N model number, independent of entity order.
+		std::vector<game::brushmodel_entity_s> bmodels(game::cm->numSubModels);
+		for (unsigned int i = 0; i < game::cm->numBrushes; ++i)
+		{
+			game::cm->brushes[i].isSubmodel = false;
+			game::cm->brushes[i].cmSubmodelIndex = 0;
+		}
 
 		for (auto& entity : this->entities_)
 		{
-			if (entity.contains("model"))
+			const auto model = entity.find("model");
+			if (model == entity.end() || model->second.empty() || model->second[0] != '*') continue;
+			const auto number = model->second.substr(1);
+			if (number.empty() || number.find_first_not_of("0123456789") != std::string::npos) continue;
+			int index = 0;
+			try { index = std::stoi(number); }
+			catch (const std::exception&) { continue; }
+			if (index <= 0 || index >= static_cast<int>(bmodels.size())) continue;
+			const auto origin = entity.find("origin");
+			if (origin != entity.end())
 			{
-				std::string model = entity["model"];
-				std::string origin = entity["origin"];
-
-				// if ent is a brushmodel/submodel
-				if (!model.empty() && model[0] == '*' && !origin.empty())
+				float parsed[3] = {};
+				if (sscanf_s(origin->second.c_str(), "%f %f %f", &parsed[0], &parsed[1], &parsed[2]) == 3)
 				{
-					auto curr_bmodel = game::brushmodel_entity_s();
-
-					// get the submodel index 
-					const auto p_index = std::stoi(model.erase(0, 1));
-
-					// the index should always match the size of our vector or we did something wrong
-					if (p_index != (int)bmodels.size())
-					{
-						game::Com_PrintMessage(0, utils::va("[Entities::getBrushModels]: Something went wrong while parsing submodels. (%d != %d)", p_index, bmodels.size()), 0);
-					}
-
-					if (p_index >= static_cast<int>(game::cm->numSubModels))
-					{
-						game::Com_PrintMessage(0, utils::va("[Entities::getBrushModels]: Something went wrong while parsing submodels. (%d >= %d numSubModels)", p_index, game::cm->numSubModels), 0);
-						break;
-					}
-
-					// assign indices and pointers to both the brush and the submodel
-					curr_bmodel.cm_submodel_index = p_index;
-					
-					if (&game::cm->cmodels[p_index])
-					{
-						curr_bmodel.cm_submodel = &game::cm->cmodels[p_index];
-					}
-
-					// fix me daddy
-					auto brush_index_ptr = game::cm->leafbrushNodes[game::cm->cmodels[p_index].leaf.leafBrushNode].data.leaf.brushes;
-					curr_bmodel.cm_brush_index = 0;
-
-					// this is giving me cancer
-					if (game::cm->cmodels[p_index].leaf.leafBrushNode != 0 && brush_index_ptr)
-					{
-						if ((uintptr_t)&*brush_index_ptr >= leaf_brushes_start && (uintptr_t) & *brush_index_ptr < leaf_brushes_end)
-						{
-							curr_bmodel.cm_brush_index = static_cast<int>(*game::cm->leafbrushNodes[game::cm->cmodels[p_index].leaf.leafBrushNode].data.leaf.brushes);
-						}
-						else
-						{
-							game::Com_PrintMessage(0, utils::va("[Entities::getBrushModels]: Skipping faulty brush-index pointer at leafbrushNodes[%d].data.leaf.brushes ...\n", p_index), 0);
-						}
-						
-						//currBModel.cmBrush = &Game::cm->brushes[*Game::cm->leafbrushNodes[Game::cm->cmodels[p_index].leaf.leafBrushNode].data.leaf.brushes];
-						curr_bmodel.cm_brush = &game::cm->brushes[curr_bmodel.cm_brush_index];
-
-						// add the submodel index to the clipmap brush
-						curr_bmodel.cm_brush->isSubmodel = true;
-						curr_bmodel.cm_brush->cmSubmodelIndex = static_cast<std::int16_t>(p_index);
-					}
-
-
-					// save entity origin
-					if (!sscanf_s(origin.c_str(), "%f %f %f", &curr_bmodel.cm_submodel_origin[0], &curr_bmodel.cm_submodel_origin[1], &curr_bmodel.cm_submodel_origin[2]))
-					{
-						game::Com_PrintMessage(0, utils::va("[!]: sscanf failed for submodel %d", p_index), 0);
-						curr_bmodel.cm_submodel_origin[0] = 0.0f;
-						curr_bmodel.cm_submodel_origin[1] = 0.0f;
-						curr_bmodel.cm_submodel_origin[2] = 0.0f;
-					}
-
-					bmodels.push_back(curr_bmodel);
+					memcpy(bmodels[index].cm_submodel_origin, parsed, sizeof(parsed));
 				}
 			}
 		}
 
+		for (unsigned int index = 1; index < game::cm->numSubModels; ++index)
+		{
+			auto& model = bmodels[index];
+			model.cm_submodel_index = static_cast<int>(index);
+			model.cm_submodel = &game::cm->cmodels[index];
+			model.cm_brush_indices = map_export::collect_brush_indices(game::cm->leafbrushNodes,
+				game::cm->leafbrushNodesCount, model.cm_submodel->leaf.leafBrushNode, game::cm->numBrushes);
+			for (const auto brush_index : model.cm_brush_indices)
+			{
+				auto& brush = game::cm->brushes[brush_index];
+				brush.isSubmodel = true;
+				brush.cmSubmodelIndex = static_cast<std::int16_t>(index);
+			}
+		}
 		return bmodels;
 	}
 

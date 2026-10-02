@@ -526,7 +526,8 @@ namespace components
 				ImGui::Text("Note:");
 				SPACING(0.0f, 1.0f);
 
-				ImGui::Text("Only selected brushes will be exported. Select brushes with debug-collision settings above.\nIf you want to export all brushes, set Brush Amount to \"0\" and Material Include to \"all\".");
+				ImGui::Text("Exports the entire collision map by default. Render-only geometry and model assets are not included.");
+				ImGui::Checkbox("Use Debug Collision Filters", gui::dvar_get_set<bool*>(dvars::mapexport_useFilters)); TT("mapexport_useFilters :: Apply brush amount, material, index, selection box and minimum size filters.");
 
 				ImGui::SameLine();
 				if (ImGui::Button("Export Map"))
